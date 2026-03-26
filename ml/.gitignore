@@ -1,0 +1,46 @@
+# Data (never commit raw data or model artifacts)
+data/raw/*
+data/clean/*
+data/features/*
+data/synthetic/*
+!data/**/.gitkeep
+
+# Trained models
+models/disruption/v*/
+models/eta/v*/
+models/anomaly/v*/
+!models/**/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Generated gRPC stubs
+server/*_pb2.py
+server/*_pb2_grpc.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter (if used for exploration)
+.ipynb_checkpoints/

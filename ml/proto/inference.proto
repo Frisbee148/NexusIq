@@ -1,0 +1,189 @@
+syntax = "proto3";
+
+package nexusiq.ml;
+
+option go_package = "github.com/nexusiq/nexusiq/pkg/mlpb";
+
+// ─────────────────────────────────────────────
+// NexusIQ ML Inference Service
+// Called by Go backend via gRPC
+// ─────────────────────────────────────────────
+
+service InferenceService {
+  // Predict disruption probability for a transport corridor
+  rpc PredictDisruption(DisruptionRequest) returns (DisruptionResponse);
+
+  // Predict delivery time with confidence bands (p50/p75/p90/p99)
+  rpc PredictETA(ETARequest) returns (ETAResponse);
+
+  // Score a shipment for anomalies (route deviation, weight mismatch, etc.)
+  rpc ScoreAnomaly(AnomalyRequest) returns (AnomalyResponse);
+
+  // Batch score multiple suppliers for risk
+  rpc BatchScoreRisk(RiskBatchRequest) returns (RiskBatchResponse);
+
+  // Health check — returns model loading status
+  rpc HealthCheck(Empty) returns (HealthResponse);
+}
+
+// ── Common ──
+
+message Empty {}
+
+// ── Disruption Prediction ──
+
+message DisruptionRequest {
+  string corridor_id = 1;
+  // Weather features
+  float temperature_celsius = 2;
+  float rainfall_mm = 3;
+  float wind_speed_kmh = 4;
+  float humidity_pct = 5;
+  // Network state features
+  float congestion_index = 6;         // 0.0–1.0 normalised
+  float port_utilization_pct = 7;     // 0–100 for port corridors
+  // NLP features
+  float news_sentiment_score = 8;     // -1.0 to +1.0
+  int32 strike_mention_count_24h = 9;
+  // Context features
+  string season = 10;                 // "summer" | "monsoon" | "post_monsoon" | "winter"
+  int32 hour_of_day = 11;             // 0–23
+  int32 day_of_week = 12;             // 0=Mon, 6=Sun
+  bool is_dfc_corridor = 13;
+  bool is_coastal_corridor = 14;
+  string primary_mode = 15;           // "road" | "rail" | "sea" | "air" | "waterway"
+  // Historical features
+  float corridor_avg_delay_hours_30d = 16;
+  float corridor_disruption_rate_90d = 17;  // fraction of days with disruption
+}
+
+message DisruptionResponse {
+  float disruption_probability = 1;          // 0.0–1.0
+  string predicted_disruption_type = 2;      // from DISRUPTION_TYPES
+  string severity = 3;                       // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  repeated string contributing_factors = 4;  // top 3 features driving the prediction
+  float model_confidence = 5;               // how confident the model is (0.0–1.0)
+  string model_version = 6;                 // e.g. "disruption/v1"
+}
+
+// ── ETA Prediction ──
+
+message ETARequest {
+  string origin_hub = 1;
+  string destination_hub = 2;
+  repeated string mode_sequence = 3;         // ["road", "rail", "waterway"]
+  string cargo_type = 4;                     // from CARGO_TYPES
+  float cargo_weight_tonnes = 5;
+  string dispatch_timestamp = 6;             // ISO-8601
+  // Current conditions
+  float route_disruption_score = 7;          // 0.0–1.0, from disruption model
+  string season = 8;
+  float total_distance_km = 9;
+  int32 num_mode_transfers = 10;
+  // Optional: carrier/lane history
+  float carrier_ontime_rate_90d = 11;        // 0.0–1.0
+  float lane_avg_transit_hours = 12;         // historical average for this OD pair
+}
+
+message ETAResponse {
+  // Delivery time predictions in hours from dispatch
+  float p50_hours = 1;
+  float p75_hours = 2;
+  float p90_hours = 3;
+  float p99_hours = 4;
+  // Derived timestamps (computed from dispatch_timestamp + hours)
+  string p50_eta = 5;                        // ISO-8601 timestamp
+  string p75_eta = 6;
+  string p90_eta = 7;
+  string p99_eta = 8;
+  // Metadata
+  float confidence_width_hours = 9;          // p99 - p50
+  string model_version = 10;
+}
+
+// ── Anomaly Detection ──
+
+message AnomalyRequest {
+  string shipment_id = 1;
+  // GPS track data
+  repeated GPSPoint gps_track = 2;
+  // Weight data
+  float declared_weight_kg = 3;
+  float measured_weight_kg = 4;              // at checkpoint
+  // Timing
+  float expected_transit_hours = 5;
+  float actual_elapsed_hours = 6;
+  // Route
+  float planned_distance_km = 7;
+  float actual_distance_km = 8;             // from GPS track
+  // Context
+  string cargo_type = 9;
+  string transport_mode = 10;
+}
+
+message GPSPoint {
+  double latitude = 1;
+  double longitude = 2;
+  string timestamp = 3;                     // ISO-8601
+  float speed_kmh = 4;
+  bool is_stopped = 5;                      // speed < 2 km/h for > 15 min
+}
+
+message AnomalyResponse {
+  float anomaly_score = 1;                  // 0.0–1.0
+  string anomaly_type = 2;                  // "route_deviation" | "stationary_alert" | "weight_mismatch" | "timing_anomaly" | "speed_anomaly" | "none"
+  string explanation = 3;                   // human-readable description
+  bool should_alert = 4;                    // true if score exceeds threshold
+  string severity = 5;                      // "LOW" | "MEDIUM" | "HIGH"
+  string model_version = 6;
+}
+
+// ── Supplier Risk Scoring ──
+
+message SupplierRiskInput {
+  string supplier_id = 1;
+  // Location risk
+  float location_flood_frequency = 2;       // events per year (historical)
+  float location_cyclone_exposure = 3;      // 0.0–1.0
+  bool is_coastal = 4;
+  // Performance
+  float ontime_delivery_rate_90d = 5;       // 0.0–1.0
+  float avg_delay_hours = 6;
+  int32 total_shipments_90d = 7;
+  // Financial / reputation signals
+  float news_sentiment_30d = 8;             // -1.0 to +1.0
+  bool gst_compliant = 9;
+  int32 negative_news_count_30d = 10;
+  // Dependency
+  int32 num_ports_used = 11;                // port concentration risk
+  float single_port_dependency_pct = 12;    // % of shipments through one port
+}
+
+message SupplierRiskOutput {
+  string supplier_id = 1;
+  float risk_score = 2;                     // 0–100
+  string risk_level = 3;                    // "GREEN" | "AMBER" | "RED"
+  repeated string top_risk_factors = 4;     // top 3 contributors
+  string trend = 5;                         // "improving" | "stable" | "worsening"
+}
+
+message RiskBatchRequest {
+  repeated SupplierRiskInput suppliers = 1;
+}
+
+message RiskBatchResponse {
+  repeated SupplierRiskOutput results = 1;
+  string scorer_version = 2;
+}
+
+// ── Health Check ──
+
+message HealthResponse {
+  bool healthy = 1;
+  bool disruption_model_loaded = 2;
+  bool eta_model_loaded = 3;
+  bool anomaly_model_loaded = 4;
+  bool risk_scorer_ready = 5;
+  string server_version = 6;
+  int64 uptime_seconds = 7;
+}
